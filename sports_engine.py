@@ -101,11 +101,12 @@ async def _enrich(source, model, ev: dict) -> dict:
     league_id = ev["league_id"]
     event_id  = ev["external_id"]
 
+    season_id = ev.get("season_id")
     home_form, away_form, h2h, standings, odds = await asyncio.gather(
-        source.team_form(home_id),
-        source.team_form(away_id),
+        source.team_form(home_id, season_id),
+        source.team_form(away_id, season_id),
         source.head_to_head(home_id, away_id),
-        source.standings(league_id),
+        source.standings(league_id, season_id),
         source.event_odds(event_id),
         return_exceptions=True,
     )

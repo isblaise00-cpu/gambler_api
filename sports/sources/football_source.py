@@ -23,6 +23,9 @@ _BASE_URL   = os.getenv("BSD_FOOTBALL_BASE", "https://sports.bzzoiro.com/api/v2"
 _CACHE_ROOT = Path("./_sports_cache/FOOTBALL")
 _DELAY      = 0.2
 
+# Cache en memoire des season_id par league_id (valide toute la journee)
+_season_cache: dict[str, str] = {}
+
 
 def _cache_path(endpoint: str, params: dict) -> Path:
     key = json.dumps({"ep": endpoint, **params}, sort_keys=True)
@@ -54,6 +57,22 @@ class FootballSource(SportSource):
             cache_file.write_text(json.dumps(data), encoding="utf-8")
         return data
 
+    async def _get_season_id(self, session: aiohttp.ClientSession, league_id: str) -> str | None:
+        """Recupere le season_id de la saison en cours pour une ligue."""
+        if league_id in _season_cache:
+            return _season_cache[league_id]
+        try:
+            data = await self._get(session, f"leagues/{league_id}/season/", {})
+            season = data.get("season", {})
+            season_id = str(season.get("id", "")) if season else None
+            if season_id:
+                _season_cache[league_id] = season_id
+                logger.info(f"[FootballSource] Saison ligue {league_id} : {season.get('name')} (id={season_id})")
+            return season_id
+        except Exception as exc:
+            logger.warning(f"[FootballSource] Impossible de recuperer le season_id pour ligue {league_id}: {exc}")
+            return None
+
     async def list_events(self, target_date: date, leagues: list[str]) -> list[dict]:
         if not os.getenv("BSD_FOOTBALL_TOKEN"):
             return []
@@ -61,12 +80,16 @@ class FootballSource(SportSource):
         async with aiohttp.ClientSession() as session:
             for league_id in leagues:
                 try:
-                    data = await self._get(session, "events/", {
+                    season_id = await self._get_season_id(session, league_id)
+                    params = {
                         "date_from": target_date.isoformat(),
                         "date_to":   target_date.isoformat(),
                         "league_id": str(league_id),
                         "limit":     "200",
-                    })
+                    }
+                    if season_id:
+                        params["season_id"] = season_id
+                    data = await self._get(session, "events/", params)
                     for item in data.get("results", []):
                         raw_date = item.get("event_date", "")
                         kickoff  = raw_date[11:16] if len(raw_date) >= 16 else "00:00"
@@ -74,6 +97,7 @@ class FootballSource(SportSource):
                             "external_id":   str(item["id"]),
                             "league":        item.get("league_name", f"League {league_id}"),
                             "league_id":     league_id,
+                            "season_id":     season_id,
                             "home_team":     item.get("home_team", ""),
                             "home_team_id":  item.get("home_team_id"),
                             "away_team":     item.get("away_team", ""),
@@ -88,12 +112,15 @@ class FootballSource(SportSource):
                     logger.error(f"[FootballSource] list_events league={league_id}: {exc}")
         return events
 
-    async def team_form(self, team_id: int | str) -> dict:
+    async def team_form(self, team_id: int | str, season_id: str | None = None) -> dict:
         if not os.getenv("BSD_FOOTBALL_TOKEN"):
             return _empty_form(team_id)
         async with aiohttp.ClientSession() as session:
             try:
-                data = await self._get(session, f"teams/{team_id}/fixtures/", {"status": "finished", "limit": "10"})
+                params: dict = {"status": "finished", "limit": "10"}
+                if season_id:
+                    params["season_id"] = season_id
+                data = await self._get(session, f"teams/{team_id}/fixtures/", params)
                 return _parse_form(int(team_id), data.get("results", []))
             except Exception as exc:
                 logger.error(f"[FootballSource] team_form team={team_id}: {exc}")
@@ -112,13 +139,16 @@ class FootballSource(SportSource):
                 logger.error(f"[FootballSource] head_to_head {team_a_id}-{team_b_id}: {exc}")
                 return []
 
-    async def standings(self, league_id: int | str) -> list[dict]:
+    async def standings(self, league_id: int | str, season_id: str | None = None) -> list[dict]:
         if not os.getenv("BSD_FOOTBALL_TOKEN"):
             return []
         async with aiohttp.ClientSession() as session:
             try:
-                data = await self._get(session, f"leagues/{league_id}/standings/", {})
-                rows = data if isinstance(data, list) else data.get("results", [])
+                params: dict = {}
+                if season_id:
+                    params["season_id"] = season_id
+                data = await self._get(session, f"leagues/{league_id}/standings/", params)
+                rows = data if isinstance(data, list) else data.get("standings", data.get("results", []))
                 flat: list[dict] = []
                 for row in rows:
                     if isinstance(row, list):
