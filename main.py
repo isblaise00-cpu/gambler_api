@@ -83,7 +83,8 @@ class SportGenerateRequest(BaseModel):
 # ── Defaults ligues ───────────────────────────────────────────────────────────
 
 _DEFAULT_LEAGUES = {
-    "FOOTBALL":   ["39", "140", "135", "78", "61", "2"],
+    # IDs BSD API (sports.bzzoiro.com) : 1=PL, 3=LaLiga, 4=SerieA, 5=Bundesliga, 6=Ligue1
+    "FOOTBALL":   ["1", "3", "4", "5", "6"],
     "BASKETBALL": ["12", "120"],
 }
 
