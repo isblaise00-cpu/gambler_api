@@ -11,6 +11,7 @@ Securise par X-API-Key dans le header de chaque requete.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date as DateType
 from typing import Optional, List
@@ -174,8 +175,13 @@ async def generate_sport_endpoint(body: SportGenerateRequest):
 
     logger.info(f"[/api/sports/generate] {sport} pour {target}, ligues={leagues}")
     try:
-        results = await generate_sport(sport, target, leagues)
+        results = await asyncio.wait_for(
+            generate_sport(sport, target, leagues),
+            timeout=120,  # 2 minutes max
+        )
         return {"sport": sport, "date": target.isoformat(), "total": len(results), "events": results}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout : trop de matchs a traiter. Reduisez le nombre de ligues ou reessayez.")
     except Exception as e:
         logger.exception(f"[/api/sports/generate] Erreur inattendue : {e}")
         raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")

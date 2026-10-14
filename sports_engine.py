@@ -15,6 +15,11 @@ from loguru import logger
 from sports.registry import get_source, get_model
 from sports.analyzer import analyze_event
 
+# Nombre max de matchs traites par requete (pour eviter les timeouts)
+_MAX_EVENTS = int(__import__("os").getenv("MAX_SPORT_EVENTS", "10"))
+# Nombre max de LLM en parallele
+_LLM_CONCURRENCY = int(__import__("os").getenv("LLM_CONCURRENCY", "4"))
+
 
 async def generate_sport(
     sport: str,
@@ -47,34 +52,44 @@ async def generate_sport(
         logger.info(f"[SportsEngine] {sport} -- aucun match programme.")
         return []
 
-    logger.info(f"[SportsEngine] {sport} -- {len(events)} match(s) a enrichir.")
+    # Limiter le nombre de matchs pour eviter les timeouts
+    if len(events) > _MAX_EVENTS:
+        logger.info(f"[SportsEngine] {len(events)} matchs trouves -- limite a {_MAX_EVENTS}.")
+        events = events[:_MAX_EVENTS]
 
-    total = len(events)
+    logger.info(f"[SportsEngine] {sport} -- {len(events)} match(s) a enrichir (parallele).")
+
+    # Enrichissement en parallele
+    enrich_tasks = [_enrich(source, model, ev) for ev in events]
+    enrich_results = await asyncio.gather(*enrich_tasks, return_exceptions=True)
+
     enriched: list[dict] = []
+    for ev, result in zip(events, enrich_results):
+        if isinstance(result, Exception):
+            logger.error(f"[SportsEngine] Enrich echoue pour {ev.get('external_id')}: {result}")
+        else:
+            enriched.append(result)
+            logger.info(f"[SportsEngine] Enrichi : {ev['home_team']} - {ev['away_team']}")
 
-    for i, ev in enumerate(events):
-        try:
-            ed = await _enrich(source, model, ev)
-            enriched.append(ed)
-            logger.info(f"[SportsEngine] {i + 1}/{total} enrichi : {ev['home_team']} - {ev['away_team']}")
-        except Exception as exc:
-            logger.error(f"[SportsEngine] Enrich echoue pour {ev.get('external_id')}: {exc}")
+    logger.info(f"[SportsEngine] {sport} -- analyse LLM de {len(enriched)} matchs (semaphore={_LLM_CONCURRENCY})...")
 
-    logger.info(f"[SportsEngine] {sport} -- analyse LLM de {len(enriched)} matchs...")
-    for ed in enriched:
-        try:
-            ed["analysis"] = await analyze_event(
-                sport,
-                ed,
-                ed["model_probs"],
-                ed["value_bets"],
-            )
-        except Exception as exc:
-            logger.error(f"[SportsEngine] LLM echoue : {exc}")
-            ed["analysis"] = None
+    # Analyse LLM en parallele avec semaphore pour eviter de surcharger l'API
+    semaphore = asyncio.Semaphore(_LLM_CONCURRENCY)
 
-    # Filtrer les evenements sans analyse (LLM completement echoue)
-    result = [ed for ed in enriched if ed.get("analysis") is not None]
+    async def analyze_with_limit(ed: dict) -> dict:
+        async with semaphore:
+            try:
+                ed["analysis"] = await analyze_event(
+                    sport, ed, ed["model_probs"], ed["value_bets"],
+                )
+            except Exception as exc:
+                logger.error(f"[SportsEngine] LLM echoue : {exc}")
+                ed["analysis"] = None
+            return ed
+
+    analyzed = await asyncio.gather(*[analyze_with_limit(ed) for ed in enriched])
+
+    result = [ed for ed in analyzed if ed.get("analysis") is not None]
     logger.info(f"[SportsEngine] {sport} -- {len(result)} pronostic(s) genere(s).")
     return result
 
