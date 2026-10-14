@@ -1,8 +1,11 @@
 """
-Gambler API -- Service externe de generation de pronostics hippiques LONAB.
+Gambler API -- Service externe de generation de pronostics.
 
-Endpoint principal : POST /api/generate
-Sante             : GET  /health
+Endpoints :
+  GET  /health                -- sante du service
+  POST /api/generate          -- pronostic hippique LONAB
+  POST /api/results/fetch     -- resultats hippiques LONAB
+  POST /api/sports/generate   -- pronostics football / basketball
 
 Securise par X-API-Key dans le header de chaque requete.
 """
@@ -10,15 +13,14 @@ from __future__ import annotations
 
 import os
 from datetime import date as DateType
-from typing import Optional
+from typing import Optional, List
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel
 
-# Charge le .env si present (dev local)
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -26,6 +28,8 @@ except ImportError:
     pass
 
 from pipeline import generate
+from results_engine import fetch_results
+from sports_engine import generate_sport
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -39,9 +43,9 @@ PORT = int(os.getenv("PORT", 9000))
 
 app = FastAPI(
     title="Gambler API",
-    description="Service de generation de pronostics hippiques LONAB/PMUB",
-    version="1.0.0",
-    docs_url="/docs",       # desactiver en prod si souhaite : docs_url=None
+    description="Service de generation de pronostics hippiques et sportifs",
+    version="2.0.0",
+    docs_url="/docs",
     redoc_url=None,
 )
 
@@ -50,45 +54,50 @@ app = FastAPI(
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    # L'endpoint /health est public
     if request.url.path == "/health":
         return await call_next(request)
-
     key = request.headers.get("x-api-key", "")
     if not API_KEY or key != API_KEY:
         logger.warning(f"[Gambler API] Acces refuse -- cle invalide depuis {request.client.host}")
         return JSONResponse(status_code=401, content={"detail": "API key invalide ou manquante."})
-
     return await call_next(request)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
-    date: Optional[str] = None  # format YYYY-MM-DD, defaut = aujourd'hui
+    date: Optional[str] = None
+
+
+class ResultsFetchRequest(BaseModel):
+    date: Optional[str] = None
+    race_type: Optional[str] = None  # hint optionnel pour le choix du PDF
+
+
+class SportGenerateRequest(BaseModel):
+    sport: str                        # "FOOTBALL" | "BASKETBALL"
+    date: Optional[str] = None
+    leagues: Optional[List[str]] = None  # IDs de ligues; defaut selon le sport
+
+
+# ── Defaults ligues ───────────────────────────────────────────────────────────
+
+_DEFAULT_LEAGUES = {
+    "FOOTBALL":   ["39", "140", "135", "78", "61", "2"],
+    "BASKETBALL": ["12", "120"],
+}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
-    """Verification que le service est actif."""
     return {"status": "ok", "service": "gambler-api"}
 
 
 @app.post("/api/generate")
 async def generate_pronostic(body: GenerateRequest = GenerateRequest()):
-    """
-    Genere le pronostic hippique LONAB pour la date demandee.
-
-    - Telecharge le PDF du programme du jour depuis lonab.bf
-    - Extrait les partants, cotes et pronostics partenaires
-    - Calcule le classement consensus (presse 70% + cotes 30%)
-    - Retourne 20 combinaisons + le classement des 7 meilleurs candidats
-
-    Header requis : X-API-Key
-    """
-    # Parsing de la date
+    """Genere le pronostic hippique LONAB pour la date demandee."""
     if body.date:
         try:
             target = DateType.fromisoformat(body.date)
@@ -98,19 +107,77 @@ async def generate_pronostic(body: GenerateRequest = GenerateRequest()):
         target = DateType.today()
 
     logger.info(f"[/api/generate] Requete pour {target}")
-
     try:
         result = await generate(target)
         return result
     except ValueError as e:
-        logger.error(f"[/api/generate] Erreur metier : {e}")
         raise HTTPException(status_code=422, detail=str(e))
     except RuntimeError as e:
-        logger.error(f"[/api/generate] PDF introuvable : {e}")
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception(f"[/api/generate] Erreur inattendue : {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du service de generation.")
+
+
+@app.post("/api/results/fetch")
+async def fetch_results_endpoint(body: ResultsFetchRequest = ResultsFetchRequest()):
+    """
+    Recupere les resultats hippiques LONAB pour la date demandee.
+
+    Retourne :
+      { arrival_order, race_type, date, source }
+    """
+    if body.date:
+        try:
+            target = DateType.fromisoformat(body.date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {body.date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    logger.info(f"[/api/results/fetch] Requete pour {target}")
+    try:
+        result = await fetch_results(target=target, preferred_race_type=body.race_type)
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.exception(f"[/api/results/fetch] Erreur inattendue : {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne lors de la recuperation des resultats.")
+
+
+@app.post("/api/sports/generate")
+async def generate_sport_endpoint(body: SportGenerateRequest):
+    """
+    Genere les pronostics sportifs (football ou basketball) pour la date demandee.
+
+    Retourne une liste de matchs enrichis :
+      [ { event, home_form, away_form, h2h, standings, odds, model_probs, value_bets, analysis }, ... ]
+    """
+    sport = body.sport.upper()
+    known = list(_DEFAULT_LEAGUES.keys())
+    if sport not in known:
+        raise HTTPException(status_code=400, detail=f"Sport inconnu : {sport!r}. Disponibles : {known}")
+
+    if body.date:
+        try:
+            target = DateType.fromisoformat(body.date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {body.date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    leagues = body.leagues or _DEFAULT_LEAGUES[sport]
+
+    logger.info(f"[/api/sports/generate] {sport} pour {target}, ligues={leagues}")
+    try:
+        results = await generate_sport(sport, target, leagues)
+        return {"sport": sport, "date": target.isoformat(), "total": len(results), "events": results}
+    except Exception as e:
+        logger.exception(f"[/api/sports/generate] Erreur inattendue : {e}")
+        raise HTTPException(status_code=500, detail="Erreur interne lors de la generation des pronostics sportifs.")
 
 
 # ── Demarrage direct ──────────────────────────────────────────────────────────
