@@ -26,6 +26,14 @@ _BASE_URL   = os.getenv("BSD_FOOTBALL_BASE", "https://sports.bzzoiro.com/api/v2"
 _CACHE_ROOT = Path("./_sports_cache/LITE")
 _MAX_EVENTS = int(os.getenv("MAX_SPORT_EVENTS", "20"))
 
+_LEAGUE_NAMES: dict[str, str] = {
+    "1": "Premier League",
+    "3": "La Liga",
+    "4": "Serie A",
+    "5": "Bundesliga",
+    "6": "Ligue 1",
+}
+
 # Cache season_id en memoire
 _season_cache: dict[str, str] = {}
 
@@ -114,7 +122,7 @@ async def generate_sport_lite(sport: str, target: date, leagues: list[str]) -> l
                     raw_date = item.get("event_date", "")
                     result.append({
                         "external_id": str(item["id"]),
-                        "league":      item.get("league_name", f"League {league_id}"),
+                        "league":      _LEAGUE_NAMES.get(league_id, item.get("league_name", f"League {league_id}")),
                         "home_team":   item.get("home_team", ""),
                         "away_team":   item.get("away_team", ""),
                         "kickoff":     raw_date[11:16] if len(raw_date) >= 16 else "00:00",
