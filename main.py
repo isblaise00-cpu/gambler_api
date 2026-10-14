@@ -30,7 +30,7 @@ except ImportError:
 
 from pipeline import generate
 from results_engine import fetch_results
-from sports_engine import generate_sport
+from sports_lite import generate_sport_lite
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -176,12 +176,12 @@ async def generate_sport_endpoint(body: SportGenerateRequest):
     logger.info(f"[/api/sports/generate] {sport} pour {target}, ligues={leagues}")
     try:
         results = await asyncio.wait_for(
-            generate_sport(sport, target, leagues),
-            timeout=120,  # 2 minutes max
+            generate_sport_lite(sport, target, leagues),
+            timeout=60,
         )
         return {"sport": sport, "date": target.isoformat(), "total": len(results), "events": results}
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout : trop de matchs a traiter. Reduisez le nombre de ligues ou reessayez.")
+        raise HTTPException(status_code=504, detail="Timeout : reessayez ou reduisez le nombre de ligues.")
     except Exception as e:
         logger.exception(f"[/api/sports/generate] Erreur inattendue : {e}")
         raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
