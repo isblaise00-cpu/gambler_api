@@ -116,7 +116,7 @@ async def generate_pronostic(body: GenerateRequest = GenerateRequest()):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception(f"[/api/generate] Erreur inattendue : {e}")
-        raise HTTPException(status_code=500, detail="Erreur interne du service de generation.")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
 
 
 @app.post("/api/results/fetch")
@@ -145,7 +145,7 @@ async def fetch_results_endpoint(body: ResultsFetchRequest = ResultsFetchRequest
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception(f"[/api/results/fetch] Erreur inattendue : {e}")
-        raise HTTPException(status_code=500, detail="Erreur interne lors de la recuperation des resultats.")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
 
 
 @app.post("/api/sports/generate")
@@ -177,7 +177,7 @@ async def generate_sport_endpoint(body: SportGenerateRequest):
         return {"sport": sport, "date": target.isoformat(), "total": len(results), "events": results}
     except Exception as e:
         logger.exception(f"[/api/sports/generate] Erreur inattendue : {e}")
-        raise HTTPException(status_code=500, detail="Erreur interne lors de la generation des pronostics sportifs.")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
 
 
 # ── Demarrage direct ──────────────────────────────────────────────────────────
