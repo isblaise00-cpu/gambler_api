@@ -48,9 +48,10 @@ def _extract_text(pdf_path: str) -> str:
 
 
 def extract_pdf_signals(text: str) -> tuple[dict, list]:
-    header = re.search(r"(?im)^.*\bCHEVAUX\b[^\n]*(?:JOCKEYS|DRIVERS)[^\n]*$", text)
+    header = re.search(r"(?im)^.*\bCHEVAUX\b[^\n]*(?:JOCKEYS|DRIVERS|CONDUCTEURS)[^\n]*$", text)
     if not header:
-        raise ValueError("Tableau des partants introuvable dans le PDF.")
+        logger.warning("En-tete du tableau des partants introuvable -- extraction regex ignoree.")
+        return {}, []
     section = text[header.end():]
     token = r"(?:\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?|N\.?/?P\.?O?\.?|[-\u2013\u2014])"
     row = re.compile(rf"^\s*(\d{{1,2}})\s+.+?\s+({token})\s+({token})\s*$", re.I)
@@ -73,7 +74,10 @@ def extract_pdf_signals(text: str) -> tuple[dict, list]:
                 continue
             partners.append({"source": name, "nums": [int(n) for n in re.findall(r"\d+", match[2])]})
     if len(odds) < 7 or len(partners) < 2:
-        raise ValueError("Extraction insuffisante : tableau de cotes ou listes des partenaires incomplets.")
+        logger.warning(
+            f"Extraction regex incomplete (cotes={len(odds)}, partenaires={len(partners)}) "
+            "-- le LLM et le mode degrade prendront le relai."
+        )
     return odds, partners
 
 
