@@ -55,9 +55,12 @@ def extract_pdf_signals(text: str) -> tuple[dict, list]:
     section = text[header.end():]
     token = r"(?:\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?|N\.?/?P\.?O?\.?|[-\u2013\u2014])"
     row = re.compile(rf"^\s*(\d{{1,2}})\s+.+?\s+({token})\s+({token})\s*$", re.I)
-    partner_row = re.compile(r"^\s*([^\d:\n]{{2,70}}?)\s+(\d{{1,2}}(?:\s*[-\u2013\u2014]\s*\d{{1,2}}){{4,}})\s*$")
+    # Partenaires sur la meme ligne : "NOM   15 - 2 - 10 ..."
+    partner_row = re.compile(r"^\s*([^\d:\n]{2,70}?)\s+(\d{1,2}(?:\s*[-\u2013\u2014]\s*\d{1,2}){4,})\s*$")
     odds = {}
     partners = []
+    seen_sources: set[str] = set()
+
     for line in section.splitlines():
         match = row.fullmatch(line)
         if match:
@@ -72,7 +75,38 @@ def extract_pdf_signals(text: str) -> tuple[dict, list]:
             name = match[1].strip()
             if re.search(r"ARRIV|RESULT|RÉSULT|FAVORI|FORME|CLASSE|PROGR|REGULAR|RÉGULAR|OUTSIDER", name, re.I):
                 continue
-            partners.append({"source": name, "nums": [int(n) for n in re.findall(r"\d+", match[2])]})
+            if name not in seen_sources:
+                seen_sources.add(name)
+                partners.append({"source": name, "nums": [int(n) for n in re.findall(r"\d+", match[2])]})
+
+    # --- Extraction de la section APTITUDES (FORME, CLASSE, PROGRES, REGULARITE) ---
+    # Format : "FORME : 5 – 10 – 2 – 15 – 8"  (tirets ordinaires ou en-dash)
+    aptitude_re = re.compile(
+        r"(?im)^(FORME|CLASSE|PROGRES|REGULARITE|FAVORIS)\s*:\s*(\d{1,2}(?:\s*[-\u2013\u2014]\s*\d{1,2}){3,})"
+    )
+    for m in aptitude_re.finditer(text):
+        name = m.group(1).strip().upper()
+        if name not in seen_sources:
+            seen_sources.add(name)
+            partners.append({"source": name, "nums": [int(n) for n in re.findall(r"\d+", m.group(2))]})
+
+    # --- Extraction partenaires presse sur 2 lignes (nom seul puis numeros seuls) ---
+    # Cas ou pdfplumber separe le nom et les numeros sur des lignes distinctes
+    if len(partners) < 2:
+        num_seq_re = re.compile(r"^\s*(\d{1,2}(?:\s*[-\u2013\u2014]\s*\d{1,2}){4,})\s*$")
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            m = num_seq_re.fullmatch(line)
+            if m and i > 0:
+                prev = lines[i - 1].strip()
+                # La ligne precedente est un nom si : pas de chiffres, pas trop longue, pas vide
+                if prev and not re.search(r"\d", prev) and 2 <= len(prev) <= 60:
+                    if re.search(r"ARRIV|RESULT|RÉSULT|OUTSIDER", prev, re.I):
+                        continue
+                    if prev not in seen_sources:
+                        seen_sources.add(prev)
+                        partners.append({"source": prev, "nums": [int(n) for n in re.findall(r"\d+", m.group(1))]})
+
     if len(odds) < 7 or len(partners) < 2:
         logger.warning(
             f"Extraction regex incomplete (cotes={len(odds)}, partenaires={len(partners)}) "
