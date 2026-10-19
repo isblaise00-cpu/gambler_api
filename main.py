@@ -31,6 +31,7 @@ except ImportError:
 from pipeline import generate
 from results_engine import fetch_results
 from sports_lite import generate_sport_lite
+from ui import UI_HTML
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -55,7 +56,7 @@ app = FastAPI(
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    if request.url.path == "/health":
+    if request.url.path in ("/health", "/ui"):
         return await call_next(request)
     key = request.headers.get("x-api-key", "")
     if not API_KEY or key != API_KEY:
@@ -95,6 +96,13 @@ _DEFAULT_LEAGUES = {
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "gambler-api"}
+
+
+@app.get("/ui", include_in_schema=False)
+async def ui_page():
+    from fastapi.responses import HTMLResponse
+    html = UI_HTML.replace("%%API_KEY%%", API_KEY)
+    return HTMLResponse(content=html)
 
 
 @app.post("/api/generate")
