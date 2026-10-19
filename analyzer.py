@@ -163,7 +163,7 @@ async def _analyze_groq(text: str) -> dict:
     from groq import AsyncGroq
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
     response = await client.chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        model=os.getenv("GROQ_MODEL", "llama3-70b-8192"),
         messages=[{"role": "user", "content": _PROMPT.format(text=text)}],
         max_tokens=4096,
         response_format={"type": "json_object"},
