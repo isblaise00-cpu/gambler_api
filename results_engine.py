@@ -72,7 +72,7 @@ async def _llm_extract(text: str) -> dict:
         from groq import AsyncGroq
         client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
         response = await client.chat.completions.create(
-            model=os.getenv("GROQ_MODEL", "llama3-70b-8192"),
+            model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
             messages=[{"role": "user", "content": _PROMPT.format(text=text)}],
             max_tokens=512,
             response_format={"type": "json_object"},

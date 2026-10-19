@@ -135,7 +135,7 @@ async def _call_groq(prompt: str) -> str:
     from groq import AsyncGroq
     client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
     response = await client.chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "llama3-70b-8192"),
+        model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2048,
         response_format={"type": "json_object"},
