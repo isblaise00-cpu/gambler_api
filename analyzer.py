@@ -7,7 +7,7 @@ import pdfplumber
 from loguru import logger
 
 _PROMPT = """\
-Extrais les donnees du programme PMUB/LONAB ci-dessous. Ne genere aucun pronostic.
+Extrais les donnees du programme PMUB/LONAB ci-dessous. Ne genere aucun pronostic invente.
 Le document contient aussi des resultats d'anciennes courses : ignore ces encadres.
 La course a extraire est celle annoncee dans le titre principal du programme.
 
@@ -26,8 +26,19 @@ Retourne uniquement ce JSON, sans markdown :
     "start_time": "HH:MM"
   }},
   "horses": [
-    {{"num": 1, "nom": "NOM COMPLET DU CHEVAL", "non_partant": false}}
-  ]
+    {{
+      "num": 1,
+      "nom": "NOM COMPLET DU CHEVAL",
+      "non_partant": false,
+      "perf": "1.1.2.3.4",
+      "gains": 125000,
+      "driver": "NOM DU DRIVER OU JOCKEY",
+      "trainer": "NOM DE L'ENTRAINEUR"
+    }}
+  ],
+  "entraineurs_en_forme": ["NOM ENTRAINEUR A", "NOM ENTRAINEUR B"],
+  "drivers_en_forme": ["NOM DRIVER A", "NOM DRIVER B"],
+  "llm_ranking": [3, 7, 1, 12, 5]
 }}
 
 Regles :
@@ -38,6 +49,18 @@ Regles :
   Les mentions NP/NPO dans les resultats des journees precedentes ne s'appliquent pas.
 - date = date du programme principal, jamais celle des resultats anciens.
 - start_time = heure de "DEPART DE LA COURSE", pas la cloture des jeux.
+- perf = derniers resultats de la colonne PERF (ex: "1.2.1.3.D"), null si absent.
+- gains = gains de carriere en entier sans separateurs (ex: 239870), null si absent.
+- driver = nom du driver/jockey/conducteur pour CETTE course, null si absent.
+- trainer = nom de l'entraineur pour CETTE course, null si absent.
+- entraineurs_en_forme = liste des entraineurs cites comme "en forme" ou avec bons
+  resultats recents dans les commentaires du programme, [] si aucun.
+- drivers_en_forme = liste des drivers/jockeys cites comme "en forme" ou ayant remporte
+  plusieurs courses recentes dans les commentaires du programme, [] si aucun.
+- llm_ranking = tes meilleurs numeros de chevaux PARTANTS par ordre de preference selon
+  ton analyse editoriale des commentaires (qualite de la monte, entraineur, forme, etc.).
+  Nombre = taille de la combinaison : 3 pour TIERCE, 4 pour QUARTE, 5 pour QUINTE.
+  Ne pas inclure les non-partants.
 - Une metadonnee absente reste null. N'invente aucune donnee ni aucun score.
 """
 
@@ -155,7 +178,11 @@ def _analyze_mock(text: str, odds: dict) -> dict:
         if rt in text.upper():
             race_type = rt
             break
-    horses = [{"num": n, "nom": f"CHEVAL_{n}", "non_partant": False} for n in sorted(odds)]
+    horses = [
+        {"num": n, "nom": f"CHEVAL_{n}", "non_partant": False,
+         "perf": None, "gains": None, "driver": None, "trainer": None}
+        for n in sorted(odds)
+    ]
     return {
         "race": {
             "type": race_type,
@@ -167,6 +194,9 @@ def _analyze_mock(text: str, odds: dict) -> dict:
             "start_time": None,
         },
         "horses": horses,
+        "entraineurs_en_forme": [],
+        "drivers_en_forme": [],
+        "llm_ranking": [],
     }
 
 
@@ -197,4 +227,11 @@ async def analyze_pdf(pdf_path: str) -> dict:
                for key in ("cote_pt", "cote_tm")):
             horse["non_partant"] = True
 
-    return {"race": data["race"], "horses": horses, "partner_predictions": partners}
+    return {
+        "race":                data["race"],
+        "horses":              horses,
+        "partner_predictions": partners,
+        "entraineurs_en_forme": data.get("entraineurs_en_forme") or [],
+        "drivers_en_forme":     data.get("drivers_en_forme") or [],
+        "llm_ranking":          data.get("llm_ranking") or [],
+    }
