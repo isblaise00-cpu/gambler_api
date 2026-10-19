@@ -213,8 +213,7 @@ async def analyze_pdf(pdf_path: str) -> dict:
                 logger.warning("Mismatch LLM/cotes -- repli sur extraction par cotes.")
                 data = None
         except Exception as exc:
-            logger.warning(f"Extraction LLM echouee ({exc}) -- repli sur extraction par cotes.")
-            data = None
+            raise RuntimeError(f"Extraction LLM echouee : {exc}") from exc
 
     if data is None:
         data = _analyze_mock(text, odds)
