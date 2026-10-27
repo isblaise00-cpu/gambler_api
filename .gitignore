@@ -16,6 +16,11 @@ build/
 venv/
 env/
 
+# Cache
+_lonab_cache/
+_sports_cache/
+.claude/
+
 # IDE
 .vscode/
 .idea/
