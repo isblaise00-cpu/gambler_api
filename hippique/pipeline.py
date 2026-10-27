@@ -9,10 +9,9 @@ from datetime import date
 
 from loguru import logger
 
-from lonab import fetch_today_pmub_pdf
-from analyzer import analyze_pdf
-from consensus_model import build_pronostic, build_pronostic_degraded
-from race_type import race_type_from_date
+from hippique.lonab import fetch_today_pmub_pdf
+from hippique.analyzer import analyze_pdf
+from hippique.consensus_model import build_pronostic, build_pronostic_degraded
 
 
 async def generate(target: date) -> dict:
@@ -36,10 +35,14 @@ async def generate(target: date) -> dict:
     logger.info("Extraction des donnees du PDF...")
     data = await analyze_pdf(str(pdf_info["path"]))
 
-    # 3. Correction date et type de course (plus fiable que le LLM)
+    # 3. Correction date ; type de course : filename > LLM (jamais le jour de la semaine)
     if "race" in data:
         data["race"]["date"] = target.isoformat()
-        data["race"]["type"] = race_type_from_date(target)
+        if pdf_info.get("race_type"):
+            logger.info(f"Type de course depuis le nom du fichier : {pdf_info['race_type']}")
+            data["race"]["type"] = pdf_info["race_type"]
+        else:
+            logger.info(f"Type de course depuis le PDF : {data['race'].get('type')}")
 
     # 4. Calcul du consensus (mode strict en priorite, degrade en fallback)
     logger.info("Calcul du consensus presse/cotes...")

@@ -2,10 +2,12 @@
 Gambler API -- Service externe de generation de pronostics.
 
 Endpoints :
-  GET  /health                -- sante du service
-  POST /api/generate          -- pronostic hippique LONAB
-  POST /api/results/fetch     -- resultats hippiques LONAB
-  POST /api/sports/generate   -- pronostics football / basketball
+  GET  /health                    -- sante du service
+  POST /api/generate              -- pronostic hippique LONAB
+  POST /api/results/fetch         -- resultats hippiques LONAB
+  GET  /api/football/leagues      -- championnats avec matchs du jour
+  GET  /api/football/matches      -- matchs d'un championnat (leger)
+  POST /api/sports/generate       -- pronostics football / basketball (complet)
 
 Securise par X-API-Key dans le header de chaque requete.
 """
@@ -28,9 +30,10 @@ try:
 except ImportError:
     pass
 
-from pipeline import generate
-from results_engine import fetch_results
+from hippique.pipeline import generate
+from hippique.results_engine import fetch_results
 from sports_lite import generate_sport_lite
+from sports.sources.football_source import FootballSource
 from ui import UI_HTML
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -149,12 +152,76 @@ async def fetch_results_endpoint(body: ResultsFetchRequest = ResultsFetchRequest
     try:
         result = await fetch_results(target=target, preferred_race_type=body.race_type)
         return result
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         logger.exception(f"[/api/results/fetch] Erreur inattendue : {e}")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
+
+
+@app.get("/api/football/leagues")
+async def football_leagues(date: Optional[str] = None):
+    """
+    Retourne la liste des championnats qui ont des matchs a la date donnee.
+
+    Retourne :
+      { date, leagues: [ { league_id, league_name, match_count } ] }
+    """
+    if date:
+        try:
+            target = DateType.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    logger.info(f"[/api/football/leagues] Scan de tous les championnats pour {target}")
+    try:
+        source = FootballSource()
+        leagues = await asyncio.wait_for(
+            source.list_all_leagues_with_events(target),
+            timeout=30,
+        )
+        return {"date": target.isoformat(), "total": len(leagues), "leagues": leagues}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout lors de la recuperation des championnats.")
+    except Exception as e:
+        logger.exception(f"[/api/football/leagues] Erreur : {e}")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
+
+
+@app.get("/api/football/matches")
+async def football_matches(league_id: str, date: Optional[str] = None):
+    """
+    Retourne les matchs d'un championnat pour la date donnee (sans enrichissement ni LLM).
+
+    Retourne :
+      { date, league_id, matches: [ { home_team, away_team, kickoff, status, round } ] }
+    """
+    if date:
+        try:
+            target = DateType.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    logger.info(f"[/api/football/matches] Ligue {league_id} pour {target}")
+    try:
+        source = FootballSource()
+        matches = await asyncio.wait_for(
+            source.list_events_with_predictions(target, league_id),
+            timeout=60,
+        )
+        return {"date": target.isoformat(), "league_id": league_id, "total": len(matches), "matches": matches}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout lors de la recuperation des matchs.")
+    except Exception as e:
+        logger.exception(f"[/api/football/matches] Erreur : {e}")
         raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
 
 

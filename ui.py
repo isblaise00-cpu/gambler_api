@@ -279,7 +279,7 @@ function renderProno(data, arrival) {
   h += `<div class="prono-main">
     <div class="label">
       COMBINAISON N°1 — <strong>${esc(main.title)}</strong>
-      <span class="score-fl">${main.score}%</span>
+      <span class="score-fl">×${main.score}</span>
     </div>
     <div class="horse-nums" style="margin-top:.5rem">`;
   for (const n of main.nums) {
@@ -301,36 +301,13 @@ function renderProno(data, arrival) {
       h += `<span class="combo-num ${arrTop.has(n)?"match":""}">${n}</span>`;
     }
     h += `</span>
-      <span class="combo-score">${p.score}%</span>
+      <span class="combo-score">×${p.score}</span>
       ${win?'<span class="combo-win">✓ EXACT</span>':""}
     </li>`;
   }
   h += `</ul>`;
 
-  // Détail candidats (collapsible)
-  const sel = main.selection;
-  if (sel?.candidates?.length) {
-    h += `<details><summary>Détail des candidats (${sel.candidates.length})</summary>
-    <table class="cand-table"><thead><tr>
-      <th>N°</th><th>Nom</th><th>λ</th><th>Cotes</th><th>Perf</th><th>Presse</th><th>LLM</th>
-    </tr></thead><tbody>`;
-    const maxL = Math.max(...sel.candidates.map(c=>c.lambda));
-    for (const c of sel.candidates) {
-      const pct = maxL>0 ? Math.round(c.lambda/maxL*100) : 0;
-      h += `<tr>
-        <td><strong>${c.num}</strong></td>
-        <td>${esc(c.nom)}</td>
-        <td>
-          <div class="bar-wrap"><div class="bar" style="width:${pct}%"></div></div>
-        </td>
-        <td>${fmt(c.sig_cotes)}</td>
-        <td>${fmt(c.sig_perf)}</td>
-        <td>${fmt(c.sig_presse)}</td>
-        <td>${fmt(c.sig_llm)}</td>
-      </tr>`;
-    }
-    h += `</tbody></table></details>`;
-  }
+
 
   if (data.commentary) {
     h += `<div class="commentary">${esc(data.commentary)}</div>`;
@@ -401,7 +378,7 @@ function renderCompare(prono, arrival) {
       <div class="stat-value ${winner?"good":"bad"}">${winner?"✓":"✗"}</div>
       <div class="stat-label">${winner
         ? "Combo exacte : " + esc(winner.title)
-        : "Aucune combo exacte dans le top 20"}</div>
+        : `Aucune combo exacte dans le top ${prono.proposals?.length||0}`}</div>
     </div>
     <div class="stat">
       <div class="stat-value">${prono.proposals?.length||0}</div>

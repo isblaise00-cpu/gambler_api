@@ -17,16 +17,25 @@ import aiohttp
 from bs4 import BeautifulSoup
 from loguru import logger
 
-INDEX_URL = "https://lonab.bf/fr/programme-pmub?page=0"
+INDEX_BASE = "https://lonab.bf/fr/programme-pmub?page="
 BASE_URL = "https://lonab.bf"
+MAX_PAGES = 10
 PDF_HREF_RE = re.compile(r'\.pdf$', re.IGNORECASE)
 DATE_IN_NAME_RE = re.compile(r'(\d{2})[-_](\d{2})[-_](\d{4})')
+RACE_TYPE_IN_NAME_RE = re.compile(r'\b(TIERCE|QUARTE|QUINTE|QUINTÉ|4\+1|4_1)\b', re.IGNORECASE)
+
+def _race_type_from_filename(name: str) -> str | None:
+    """Extrait le type de course depuis le nom du fichier PDF, None si absent."""
+    m = RACE_TYPE_IN_NAME_RE.search(name)
+    if not m:
+        return None
+    raw = m.group(1).upper()
+    if raw in ("QUINTE", "QUINTÉ", "4+1", "4_1"):
+        return "QUINTE"
+    return raw  # TIERCE ou QUARTE
 
 
-async def list_programme_links(session: aiohttp.ClientSession) -> list[dict]:
-    async with session.get(INDEX_URL, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-        resp.raise_for_status()
-        html = await resp.text()
+def _parse_links(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     entries: list[dict] = []
     for a in soup.find_all("a", href=PDF_HREF_RE):
@@ -47,12 +56,38 @@ async def list_programme_links(session: aiohttp.ClientSession) -> list[dict]:
             kind = "ECD"
         else:
             kind = "OTHER"
-        entries.append({"url": url, "date": d, "kind": kind, "filename": name})
+        race_type = _race_type_from_filename(name)
+        entries.append({"url": url, "date": d, "kind": kind, "filename": name, "race_type": race_type})
     return entries
 
 
+async def list_programme_links(
+    session: aiohttp.ClientSession,
+    target: Optional[date] = None,
+) -> list[dict]:
+    """Parcourt les pages jusqu'a trouver `target` ou jusqu'a MAX_PAGES."""
+    all_entries: list[dict] = []
+    for page in range(MAX_PAGES):
+        url = INDEX_BASE + str(page)
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            resp.raise_for_status()
+            html = await resp.text()
+        entries = _parse_links(html)
+        if not entries:
+            break
+        all_entries.extend(entries)
+        if target is not None:
+            if any(e["date"] == target for e in entries):
+                break
+            # Si toutes les dates de cette page sont anterieures a target, inutile de continuer
+            dated = [e["date"] for e in entries if e["date"] is not None]
+            if dated and max(dated) < target and page > 0:
+                break
+    return all_entries
+
+
 async def find_pmub_for(session: aiohttp.ClientSession, target: date) -> Optional[dict]:
-    entries = await list_programme_links(session)
+    entries = await list_programme_links(session, target=target)
     pmub = [e for e in entries if e["kind"] == "PMUB" and e["date"] is not None]
     exact = [e for e in pmub if e["date"] == target]
     if exact:
@@ -86,4 +121,4 @@ async def fetch_today_pmub_pdf(target: Optional[date] = None, cache_dir: Optiona
             await download_pdf(session, entry["url"], dest)
         else:
             logger.info(f"Using cached {dest}")
-    return {"url": entry["url"], "date": entry["date"], "path": dest, "filename": entry["filename"]}
+    return {"url": entry["url"], "date": entry["date"], "path": dest, "filename": entry["filename"], "race_type": entry.get("race_type")}

@@ -6,8 +6,7 @@ Signaux combines (poids dans _WEIGHTS) :
   perf   (0.20) -- forme recente (colonne PERF)
   gains  (0.05) -- gains de carriere
   humain (0.05) -- driver / entraineur en forme
-  llm    (0.15) -- classement editorial LLM
-  presse (0.15) -- consensus presse (partenaires)
+  presse (0.30) -- consensus presse (partenaires)
 
 La probabilite de chaque combinaison est calculee par Plackett-Luce exact
 (somme sur les k! permutations). Les 20 meilleures combinaisons sont retournees.
@@ -30,8 +29,7 @@ _WEIGHTS: dict[str, float] = {
     "perf":   0.20,
     "gains":  0.05,
     "humain": 0.05,
-    "llm":    0.15,
-    "presse": 0.15,
+    "presse": 0.30,
 }
 
 # ── Fonctions utilitaires ──────────────────────────────────────────────────────
@@ -164,17 +162,6 @@ def _signal_humain(
     return _normalize_max(result)
 
 
-def _signal_llm(active: dict, llm_ranking: list) -> dict[int, float]:
-    """Classement editorial du LLM : 1er = score 1.0, dernier = score ~0."""
-    result: dict[int, float] = {n: 0.0 for n in active}
-    ranked = [n for n in llm_ranking if isinstance(n, int) and n in active]
-    k = len(ranked)
-    if k == 0:
-        return _normalize_max(result)
-    for i, n in enumerate(ranked):
-        result[n] = (k - i) / k
-    return _normalize_max(result)
-
 
 def _signal_presse(active: dict, partners: dict) -> dict[int, float]:
     """Consensus presse : somme ponderee des citations sur les 5 premiers."""
@@ -193,7 +180,6 @@ def _compute_lambdas(
     partners: dict,
     entraineurs_en_forme: list,
     drivers_en_forme: list,
-    llm_ranking: list,
 ) -> dict[int, float]:
     """Combine tous les signaux en un lambda Plackett-Luce par cheval."""
     signals = {
@@ -202,7 +188,6 @@ def _compute_lambdas(
         "perf":   _signal_perf(active),
         "gains":  _signal_gains(active),
         "humain": _signal_humain(active, entraineurs_en_forme, drivers_en_forme),
-        "llm":    _signal_llm(active, llm_ranking),
         "presse": _signal_presse(active, partners),
     }
     lambdas: dict[int, float] = {}
@@ -330,79 +315,71 @@ def _build(data: dict, strict: bool) -> dict:  # noqa: C901
     # ── Signaux enrichis ──────────────────────────────────────────────────────
     entraineurs_en_forme = data.get("entraineurs_en_forme") or []
     drivers_en_forme     = data.get("drivers_en_forme") or []
-    llm_ranking          = data.get("llm_ranking") or []
 
-    lambdas, signals = _compute_lambdas(
-        active, partners, entraineurs_en_forme, drivers_en_forme, llm_ranking
+    lambdas, _ = _compute_lambdas(
+        active, partners, entraineurs_en_forme, drivers_en_forme
     )
 
-    # ── Classement des chevaux ────────────────────────────────────────────────
-    ranked = sorted(active.keys(), key=lambda n: -lambdas[n])
+    # ── Pool presse : union de tous les chevaux cites au moins une fois ───────
+    # Reduit l'espace de recherche et accelere Plackett-Luce.
+    press_pool: set[int] = set()
+    for nums in partners.values():
+        press_pool.update(nums)
+    press_pool &= set(active.keys())
 
-    # ── Toutes les combinaisons, classees par prob PL ─────────────────────────
-    all_combos = list(combinations(sorted(active.keys()), size))
-    logger.info(f"[PL] {len(active)} partants -> {len(all_combos)} combinaisons de {size}.")
+    # Completer si le pool est trop petit pour former une combo
+    if len(press_pool) < size:
+        ranked_by_lambda = sorted(active.keys(), key=lambda n: -lambdas[n])
+        for h in ranked_by_lambda:
+            press_pool.add(h)
+            if len(press_pool) >= size:
+                break
 
-    combo_probs = [
-        (combo, _pl_combo_prob(combo, lambdas)) for combo in all_combos
-    ]
-    combo_probs.sort(key=lambda x: -x[1])
+    logger.info(
+        f"[PL] {len(active)} partants, pool presse={len(press_pool)} "
+        f"-> {len(list(combinations(press_pool, size)))} combinaisons de {size}."
+    )
 
-    # ── Construction des proposals ────────────────────────────────────────────
+    # ── Combinaisons depuis le pool presse, classees par prob PL ─────────────
+    pool_combos = list(combinations(sorted(press_pool), size))
+    combo_probs = sorted(
+        [(combo, _pl_combo_prob(combo, lambdas)) for combo in pool_combos],
+        key=lambda x: -x[1],
+    )
+
+    # ── Construction des 200 proposals ───────────────────────────────────────
+    # score = lift sur le hasard dans le pool presse
+    n_combos     = len(pool_combos)
+    uniform_prob = 1.0 / n_combos if n_combos > 0 else 1.0
+
     proposals = []
-    for index, (combo, prob) in enumerate(combo_probs[:20]):
+    for index, (combo, prob) in enumerate(combo_probs[:200]):
+        lift = round(min(prob / uniform_prob, 100.0), 1)
         proposals.append({
-            "id":       "prono_du_jour" if index == 0 else f"consensus_{index + 1:02d}",
-            "title":    "LE PRONO DU JOUR" if index == 0 else f"COMBINAISON #{index + 1}",
-            "subtitle": "Selection en desordre - ordre de preference affiche",
-            "nums":     list(combo),
-            "score":    round(prob * 100, 3),
-            "source":   MODEL_VERSION,
+            "id":    "prono_du_jour" if index == 0 else f"consensus_{index + 1:03d}",
+            "title": "LE PRONO DU JOUR" if index == 0 else f"COMBINAISON #{index + 1}",
+            "nums":  list(combo),
+            "score": lift,
         })
 
-    # Detail complet sur le 1er proposal
-    candidates_detail = []
-    for n in ranked:
-        h = active[n]
-        row = {
-            "num":    n,
-            "nom":    h["nom"],
-            "lambda": round(lambdas[n], 4),
-        }
-        for sig_name, sig_vals in signals.items():
-            row[f"sig_{sig_name}"] = round(sig_vals.get(n, 0.0), 4)
-        candidates_detail.append(row)
-
+    # ── Metadonnees sur le 1er proposal uniquement ────────────────────────────
+    mode_label = "" if strict else " [MODE DEGRADE]"
     proposals[0]["selection"] = {
-        "version":   MODEL_VERSION,
-        "mode":      "strict" if strict else "degraded",
-        "weights":   _WEIGHTS,
-        "candidates": candidates_detail,
-        "partners":  [{"source": name, "nums": nums} for name, nums in sorted(partners.items())],
-        "signals_available": {
-            "perf":    any(active[n].get("perf") for n in active),
-            "gains":   any(active[n].get("gains") for n in active),
-            "driver":  any(active[n].get("driver") for n in active),
-            "trainer": any(active[n].get("trainer") for n in active),
-            "llm_ranking":       bool(llm_ranking),
-            "entraineurs_forme": bool(entraineurs_en_forme),
-            "drivers_forme":     bool(drivers_en_forme),
-            "partenaires":       len(partners),
-        },
-        "possible_combinations":   len(all_combos),
-        "generated_combinations":  len(proposals),
+        "version":              MODEL_VERSION,
+        "mode":                 "strict" if strict else "degraded",
+        "weights":              _WEIGHTS,
+        "pool_size":            len(press_pool),
+        "possible_combinations": n_combos,
+        "generated_combinations": len(proposals),
+        "partenaires":          len(partners),
     }
 
-    # ── Commentaire ──────────────────────────────────────────────────────────
-    sig_avail = proposals[0]["selection"]["signals_available"]
-    active_signals = [s for s, v in sig_avail.items() if v]
-    mode_label = "" if strict else " [MODE DEGRADE]"
     commentary = (
-        f"{len(active)} partants, {len(all_combos)} combinaisons de {size} evaluees "
+        f"{len(active)} partants, pool presse {len(press_pool)} chevaux, "
+        f"{n_combos} combinaisons de {size} evaluees "
         f"par modele Plackett-Luce ({MODEL_VERSION}).{mode_label} "
-        f"Signaux actifs : {', '.join(active_signals) or 'cotes uniquement'}. "
         f"{len(partners)} partenaire(s) presse. "
-        "Les scores (x100) sont des probabilites de selection, pas des garanties."
+        "Score = lift sur le hasard (ex: 15 = 15x plus probable qu'une combo aleatoire)."
     )
 
     return {**data, "proposals": proposals, "commentary": commentary}

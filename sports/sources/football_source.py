@@ -73,6 +73,54 @@ class FootballSource(SportSource):
             logger.warning(f"[FootballSource] Impossible de recuperer le season_id pour ligue {league_id}: {exc}")
             return None
 
+    async def list_all_leagues_with_events(self, target_date: date) -> list[dict]:
+        """
+        Recupere tous les championnats qui ont au moins 1 match a la date donnee.
+        1 requete /events/ pour grouper par league_id, puis N requetes /leagues/{id}/
+        en parallele pour resoudre les noms.
+
+        Retourne :
+          [ { league_id, league_name, country, match_count } ] trie par league_name
+        """
+        if not os.getenv("BSD_FOOTBALL_TOKEN"):
+            return []
+        async with aiohttp.ClientSession() as session:
+            try:
+                params = {
+                    "date_from": target_date.isoformat(),
+                    "date_to":   target_date.isoformat(),
+                    "limit":     "500",
+                }
+                data = await self._get(session, "events/", params)
+                counts: dict[str, int] = {}
+                for item in data.get("results", []):
+                    lid = str(item.get("league_id", ""))
+                    if lid:
+                        counts[lid] = counts.get(lid, 0) + 1
+
+                async def _fetch_league(lid: str) -> dict:
+                    try:
+                        info = await self._get(session, f"leagues/{lid}/", {})
+                        return {
+                            "league_id":   lid,
+                            "league_name": info.get("name", f"League {lid}"),
+                            "country":     info.get("country", ""),
+                            "match_count": counts[lid],
+                        }
+                    except Exception:
+                        return {
+                            "league_id":   lid,
+                            "league_name": f"League {lid}",
+                            "country":     "",
+                            "match_count": counts[lid],
+                        }
+
+                leagues = await asyncio.gather(*[_fetch_league(lid) for lid in counts])
+                return sorted(leagues, key=lambda x: x["league_name"])
+            except Exception as exc:
+                logger.error(f"[FootballSource] list_all_leagues_with_events: {exc}")
+                return []
+
     async def list_events(self, target_date: date, leagues: list[str]) -> list[dict]:
         if not os.getenv("BSD_FOOTBALL_TOKEN"):
             return []
@@ -111,6 +159,38 @@ class FootballSource(SportSource):
                 except Exception as exc:
                     logger.error(f"[FootballSource] list_events league={league_id}: {exc}")
         return events
+
+    async def list_events_with_predictions(self, target_date: date, league_id: str) -> list[dict]:
+        """
+        Recupere les matchs d'une ligue + la prediction BSD pour chaque match en parallele.
+
+        Retourne :
+          [ { external_id, home_team, away_team, kickoff, status, round, prediction } ]
+        """
+        if not os.getenv("BSD_FOOTBALL_TOKEN"):
+            return []
+        events = await self.list_events(target_date, [league_id])
+        if not events:
+            return []
+
+        async with aiohttp.ClientSession() as session:
+            async def _fetch_pred(ev: dict) -> dict:
+                try:
+                    pred_raw = await self._get(session, f"events/{ev['external_id']}/prediction/", {})
+                    prediction = _parse_prediction(pred_raw) if isinstance(pred_raw, dict) else {}
+                except Exception:
+                    prediction = {}
+                return {
+                    "external_id": ev["external_id"],
+                    "home_team":   ev["home_team"],
+                    "away_team":   ev["away_team"],
+                    "kickoff":     ev["kickoff"],
+                    "status":      ev["status"],
+                    "round":       ev.get("round", ""),
+                    "prediction":  prediction,
+                }
+
+            return await asyncio.gather(*[_fetch_pred(ev) for ev in events])
 
     async def team_form(self, team_id: int | str, season_id: str | None = None) -> dict:
         if not os.getenv("BSD_FOOTBALL_TOKEN"):
