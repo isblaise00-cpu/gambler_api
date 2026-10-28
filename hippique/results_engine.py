@@ -115,21 +115,20 @@ async def _list_result_links(
     return all_entries
 
 
-async def _find_result_pdf(
+async def _candidates_for(
     session: aiohttp.ClientSession,
     target: date,
     preferred_race_type: Optional[str] = None,
-) -> Optional[dict]:
+) -> list[dict]:
+    """Retourne tous les PDFs de resultats pour `target`, preferred en premier."""
     entries    = await _list_result_links(session, target=target)
     candidates = [e for e in entries if e["date"] == target]
-    if not candidates:
-        return None
     if preferred_race_type:
         rtype_upper = preferred_race_type.upper()
-        typed = [c for c in candidates if rtype_upper in c["filename"].upper()]
-        if typed:
-            return typed[0]
-    return candidates[0]
+        preferred = [c for c in candidates if rtype_upper in c["filename"].upper()]
+        others    = [c for c in candidates if rtype_upper not in c["filename"].upper()]
+        candidates = preferred + others
+    return candidates
 
 
 async def fetch_results(
@@ -139,48 +138,51 @@ async def fetch_results(
 ) -> dict:
     """
     Telecharge le PDF resultats LONAB, extrait l'arrivee par regex.
+    Essaie tous les PDFs du jour jusqu'a en trouver un avec une arrivee valide
+    (certains jours LONAB publie un PDF de report sans arrivee en plus du vrai).
     Retourne un dict pur -- aucune ecriture en base.
-
-    Retour :
-      {
-        "arrival_order": [int, ...],
-        "race_type":     str,
-        "date":          str (YYYY-MM-DD),
-        "source":        str (URL du PDF)
-      }
     """
     target    = target    or datetime.utcnow().date()
     cache_dir = cache_dir or Path("./_lonab_cache")
 
     async with aiohttp.ClientSession() as session:
-        entry = await _find_result_pdf(session, target, preferred_race_type)
-        if not entry:
+        candidates = await _candidates_for(session, target, preferred_race_type)
+        if not candidates:
             raise FileNotFoundError(
                 f"Resultats du {target} pas encore publies sur LONAB."
             )
-        dest = cache_dir / f"RES_{entry['filename']}"
-        if not dest.exists():
-            async with session.get(entry["url"], timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                resp.raise_for_status()
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(await resp.read())
-            logger.info(f"Resultats telecharges : {dest}")
-        else:
-            logger.info(f"Resultats en cache : {dest}")
 
-    text = _extract_text(str(dest))
-    if not text.strip():
-        raise ValueError(
-            "Impossible d'extraire le texte du PDF de resultats. "
-            "Le fichier est probablement base sur des images."
-        )
+        last_error: Exception = ValueError("Aucun PDF exploitable.")
+        for entry in candidates:
+            dest = cache_dir / f"RES_{entry['filename']}"
+            if not dest.exists():
+                async with session.get(entry["url"], timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    resp.raise_for_status()
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(await resp.read())
+                logger.info(f"Resultats telecharges : {dest}")
+            else:
+                logger.info(f"Resultats en cache : {dest}")
 
-    data = _regex_extract(text)
+            text = _extract_text(str(dest))
+            if not text.strip():
+                last_error = ValueError(f"{entry['filename']} : PDF image, texte non extractible.")
+                logger.warning(str(last_error))
+                continue
 
-    logger.info(f"Arrivee extraite : {data['arrival_order']} ({data.get('race_type')}, {data.get('date')})")
-    return {
-        "arrival_order": data["arrival_order"],
-        "race_type":     data.get("race_type"),
-        "date":          data.get("date", target.isoformat()),
-        "source":        entry["url"],
-    }
+            try:
+                data = _regex_extract(text)
+            except ValueError as e:
+                last_error = e
+                logger.warning(f"{entry['filename']} : {e}")
+                continue
+
+            logger.info(f"Arrivee extraite depuis {entry['filename']} : {data['arrival_order']} ({data.get('race_type')}, {data.get('date')})")
+            return {
+                "arrival_order": data["arrival_order"],
+                "race_type":     data.get("race_type"),
+                "date":          data.get("date", target.isoformat()),
+                "source":        entry["url"],
+            }
+
+        raise last_error
