@@ -32,7 +32,7 @@ except ImportError:
 
 from hippique.pipeline import generate
 from hippique.results_engine import fetch_results
-from sports_lite import generate_sport_lite
+from sports_lite import generate_sport_lite, list_basketball_leagues, list_basketball_matches
 from sports.sources.football_source import FootballSource
 from ui import UI_HTML
 
@@ -90,7 +90,7 @@ class SportGenerateRequest(BaseModel):
 _DEFAULT_LEAGUES = {
     # IDs BSD API (sports.bzzoiro.com) : 1=PL, 3=LaLiga, 4=SerieA, 5=Bundesliga, 6=Ligue1
     "FOOTBALL":   ["1", "3", "4", "5", "6"],
-    "BASKETBALL": ["12", "120"],
+    "BASKETBALL": ["1", "2"],
 }
 
 
@@ -222,6 +222,48 @@ async def football_matches(league_id: str, date: Optional[str] = None):
         raise HTTPException(status_code=504, detail="Timeout lors de la recuperation des matchs.")
     except Exception as e:
         logger.exception(f"[/api/football/matches] Erreur : {e}")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
+
+
+@app.get("/api/basketball/leagues")
+async def basketball_leagues_endpoint(date: Optional[str] = None):
+    """Retourne tous les championnats basketball avec matchs a la date donnee."""
+    if date:
+        try:
+            target = DateType.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    try:
+        leagues = await asyncio.wait_for(list_basketball_leagues(target), timeout=30)
+        return {"date": target.isoformat(), "total": len(leagues), "leagues": leagues}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout lors de la recuperation des championnats.")
+    except Exception as e:
+        logger.exception(f"[/api/basketball/leagues] Erreur : {e}")
+        raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
+
+
+@app.get("/api/basketball/matches")
+async def basketball_matches_endpoint(league_id: str, date: Optional[str] = None):
+    """Retourne les matchs d'un championnat basketball pour la date donnee."""
+    if date:
+        try:
+            target = DateType.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Format de date invalide : {date!r}. Attendu : YYYY-MM-DD")
+    else:
+        target = DateType.today()
+
+    try:
+        matches = await asyncio.wait_for(list_basketball_matches(target, league_id), timeout=30)
+        return {"date": target.isoformat(), "league_id": league_id, "total": len(matches), "matches": matches}
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Timeout lors de la recuperation des matchs.")
+    except Exception as e:
+        logger.exception(f"[/api/basketball/matches] Erreur : {e}")
         raise HTTPException(status_code=500, detail=f"[DEBUG] {type(e).__name__}: {e}")
 
 
