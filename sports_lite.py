@@ -175,41 +175,69 @@ async def _generate_football(session: aiohttp.ClientSession, target: date, leagu
 
 # ── Basketball ────────────────────────────────────────────────────────────────
 
+async def _fetch_all_basketball_predictions(session: aiohttp.ClientSession) -> dict[int, dict]:
+    """Recupere toutes les predictions BSD basket et les indexe par event_id.
+    Le filtre date ne fonctionne pas cote BSD -- on fetche tout et on filtre localement."""
+    index: dict[int, dict] = {}
+    offset = 0
+    limit  = 200
+    while True:
+        try:
+            data = await _get(session, _BASKETBALL_BASE_URL, "BASKETBALL", "predictions/", {"limit": str(limit), "offset": str(offset)})
+        except Exception as exc:
+            logger.warning(f"[SportsLite/Basketball] predictions fetch: {exc}")
+            break
+        for p in data.get("results", []):
+            eid = p.get("event_id")
+            if eid is not None:
+                index[int(eid)] = p
+        total = data.get("count", 0)
+        offset += limit
+        if offset >= total:
+            break
+    logger.info(f"[SportsLite/Basketball] {len(index)} predictions indexees")
+    return index
+
+
+def _parse_basketball_event(item: dict, league_id: str) -> dict:
+    raw_date   = item.get("event_date", "")
+    league_obj = item.get("league", {})
+    home_obj   = item.get("home_team", {})
+    away_obj   = item.get("away_team", {})
+    return {
+        "external_id": str(item["id"]),
+        "league":      _BASKETBALL_LEAGUE_NAMES.get(
+            league_id,
+            league_obj.get("name", f"League {league_id}") if isinstance(league_obj, dict) else f"League {league_id}",
+        ),
+        "home_team":   item.get("home_team_name") or (home_obj.get("name", "") if isinstance(home_obj, dict) else ""),
+        "away_team":   item.get("away_team_name") or (away_obj.get("name", "") if isinstance(away_obj, dict) else ""),
+        "home_score":  item.get("home_score"),
+        "away_score":  item.get("away_score"),
+        "status":      item.get("status", ""),
+        "kickoff":     raw_date[11:16] if len(raw_date) >= 16 else "00:00",
+    }
+
+
 async def _generate_basketball(session: aiohttp.ClientSession, target: date, leagues: list[str]) -> list[dict]:
     async def fetch_league(league_id: str) -> list[dict]:
         try:
-            params: dict = {
+            data = await _get(session, _BASKETBALL_BASE_URL, "BASKETBALL", "events/", {
                 "date_from": target.isoformat(),
                 "date_to":   target.isoformat(),
                 "league":    league_id,
                 "limit":     "50",
-            }
-            data = await _get(session, _BASKETBALL_BASE_URL, "BASKETBALL", "events/", params)
-            result = []
-            for item in data.get("results", []):
-                raw_date  = item.get("event_date", "")
-                league_obj = item.get("league", {})
-                home_obj   = item.get("home_team", {})
-                away_obj   = item.get("away_team", {})
-                result.append({
-                    "external_id": str(item["id"]),
-                    "league":      _BASKETBALL_LEAGUE_NAMES.get(
-                        league_id,
-                        league_obj.get("name", f"League {league_id}") if isinstance(league_obj, dict) else f"League {league_id}",
-                    ),
-                    "home_team":   item.get("home_team_name") or (home_obj.get("name", "") if isinstance(home_obj, dict) else str(home_obj)),
-                    "away_team":   item.get("away_team_name") or (away_obj.get("name", "") if isinstance(away_obj, dict) else str(away_obj)),
-                    "home_score":  item.get("home_score"),
-                    "away_score":  item.get("away_score"),
-                    "status":      item.get("status", ""),
-                    "kickoff":     raw_date[11:16] if len(raw_date) >= 16 else "00:00",
-                })
-            return result
+            })
+            return [_parse_basketball_event(item, league_id) for item in data.get("results", [])]
         except Exception as exc:
             logger.error(f"[SportsLite/Basketball] fetch_league {league_id}: {exc}")
             return []
 
-    league_results = await asyncio.gather(*[fetch_league(lid) for lid in leagues])
+    league_results, predictions_index = await asyncio.gather(
+        asyncio.gather(*[fetch_league(lid) for lid in leagues]),
+        _fetch_all_basketball_predictions(session),
+    )
+
     events: list[dict] = []
     for evs in league_results:
         events.extend(evs)
@@ -221,6 +249,7 @@ async def _generate_basketball(session: aiohttp.ClientSession, target: date, lea
 
     results = []
     for ev in events:
+        pred = predictions_index.get(int(ev["external_id"]), {})
         results.append({
             "league":     ev["league"],
             "home_team":  ev["home_team"],
@@ -229,7 +258,18 @@ async def _generate_basketball(session: aiohttp.ClientSession, target: date, lea
             "home_score": ev.get("home_score"),
             "away_score": ev.get("away_score"),
             "status":     ev.get("status"),
-            "prediction": {},
+            "prediction": {
+                "winner":           pred.get("predicted_winner_name"),
+                "prob_home":        pred.get("prob_home_win"),
+                "prob_away":        pred.get("prob_away_win"),
+                "prob_over_205":    pred.get("prob_over_205"),
+                "prob_over_215":    pred.get("prob_over_215"),
+                "prob_over_225":    pred.get("prob_over_225"),
+                "confidence":       pred.get("confidence"),
+                "confidence_score": pred.get("confidence_score"),
+                "elo_home":         pred.get("elo_home"),
+                "elo_away":         pred.get("elo_away"),
+            } if pred else {},
         })
     return results
 
